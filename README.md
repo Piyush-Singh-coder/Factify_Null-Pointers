@@ -2,7 +2,7 @@
 
 > **Team Name:** Null Pointers  
 > **Project Name:** Factify  
-> **Track:** 2 (Open Innovation)  
+> **Track:** 2 
 
 ## 👥 Team Members
 *   **Member 1:** Piyush Singh - Backend
