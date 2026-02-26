@@ -195,15 +195,17 @@ def download_audio_from_url(video_url: str, download_dir: str) -> Optional[str]:
                 if os.path.exists(final_filepath_mp3):
                     return final_filepath_mp3
                 else:
-                    print(f"Error: yt-dlp reported success but file not found at {final_filepath_mp3}")
-                    return None
+                    error_msg = f"yt-dlp reported success but file not found at {final_filepath_mp3}"
+                    print(error_msg)
+                    raise Exception(error_msg)
             else:
-                print(f"Error: yt-dlp download failed with code {error_code}")
-                return None
+                error_msg = f"yt-dlp download failed with code {error_code}"
+                print(error_msg)
+                raise Exception(error_msg)
 
     except Exception as e:
         print(f"Error downloading audio: {e}")
-        return None
+        raise e
 
 # ---
 # Endpoints will now call `transcribe_audio_openai` directly.
@@ -376,9 +378,10 @@ async def verify_video(request: VideoURLRequest):
     # Use a temporary directory that cleans itself up
     try:
         with tempfile.TemporaryDirectory() as temp_dir:
-            audio_path = download_audio_from_url(video_url, temp_dir)
-            if not audio_path:
-                raise HTTPException(status_code=400, detail="Failed to download audio from URL")
+            try:
+                audio_path = download_audio_from_url(video_url, temp_dir)
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=f"Failed to download audio: {str(e)}")
             
             transcription = transcribe_audio_openai(audio_path)
             if not transcription:
@@ -424,9 +427,10 @@ async def full_pipeline(request: FullPipelineRequest):
 
     try:
         with tempfile.TemporaryDirectory() as temp_dir:
-            audio_path = download_audio_from_url(video_url, temp_dir)
-            if not audio_path:
-                raise HTTPException(status_code=400, detail="Failed to download audio")
+            try:
+                audio_path = download_audio_from_url(video_url, temp_dir)
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=f"Failed to download audio: {str(e)}")
             
             transcription = transcribe_audio_openai(audio_path)
             if not transcription:
