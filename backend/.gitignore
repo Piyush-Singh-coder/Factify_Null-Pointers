@@ -1,1 +1,28 @@
+# Environments
 .env
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Temporary media files (from yt-dlp)
+*.mp3
+*.mp4
+*.webm
+*.m4a
+*.part
+*.ytdl
+
+# Logs and databases
+*.log
+*.sqlite3
+
+# OS generated files
+.DS_Store
+Thumbs.db
