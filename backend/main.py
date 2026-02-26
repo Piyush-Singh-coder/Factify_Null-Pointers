@@ -28,15 +28,24 @@ app = FastAPI(
 
 # --- Configuration ---
 # Use environment variables or fallbacks
-CLIENT_ORIGIN = os.getenv("CLIENT_ORIGIN_URL", "http://localhost:5174")
-origins = [CLIENT_ORIGIN]
+CLIENT_ORIGIN = os.getenv("CLIENT_ORIGIN_URL")
+origins = [
+    "http://localhost:5173",
+    "http://localhost:5174",
+    "http://localhost:5175",
+    "http://localhost:3000",
+    "http://127.0.0.1:5173",
+    "http://127.0.0.1:5174",
+    "http://127.0.0.1:5175",
+    "http://127.0.0.1:3000"
+]
 
-if CLIENT_ORIGIN == "*":
-    print("Warning: CORS is set to allow all origins ('*'). This is insecure for production.")
+if CLIENT_ORIGIN:
+    origins.append(CLIENT_ORIGIN)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=origins, # allow_origins=["*"] can be used if allow_credentials=False
     allow_credentials=True, 
     allow_methods=["*"],
     allow_headers=["*"]
@@ -162,6 +171,11 @@ def download_audio_from_url(video_url: str, download_dir: str) -> Optional[str]:
             'quiet': True,
             'noplaylist': True,
             'simulate': True, # Don't download, just get info
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['android', 'web']
+                }
+            }
         }
         with yt_dlp.YoutubeDL(info_opts) as ydl_info:
             info_dict = ydl_info.extract_info(video_url, download=False)
@@ -185,6 +199,11 @@ def download_audio_from_url(video_url: str, download_dir: str) -> Optional[str]:
             'noplaylist': True,
             'quiet': True,
             'noprogress': True,
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['android', 'web']
+                }
+            }
         }
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
