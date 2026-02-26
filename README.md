@@ -20,3 +20,5 @@ The rapid spread and massive volume of video content in form of YouTube Shorts, 
 ## 📽️ Demo Video
 Check out our demo video here: [https://youtu.be/QX9HpLKIfFY](https://youtu.be/QX9HpLKIfFY)
 
+## 🌐 Live Website
+Try the live Factify application: [https://factify-null-pointers-16l4.vercel.app/](https://factify-null-pointers-16l4.vercel.app/)
