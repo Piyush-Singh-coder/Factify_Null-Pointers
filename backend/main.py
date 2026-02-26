@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, BackgroundTasks, UploadFile, File
+from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, HttpUrl
@@ -13,6 +13,7 @@ import uuid
 from datetime import datetime
 import base64
 import tempfile
+import shutil
 
 # Load environment variables
 load_dotenv()
@@ -26,7 +27,7 @@ app = FastAPI(
 
 # --- Configuration ---
 # Use environment variables or fallbacks
-CLIENT_ORIGIN = os.getenv("CLIENT_ORIGIN_URL", "http://localhost:5174")
+CLIENT_ORIGIN = os.getenv("CLIENT_ORIGIN_URL", "http://localhost:5173")
 origins = [CLIENT_ORIGIN]
 
 if CLIENT_ORIGIN == "*":
@@ -103,6 +104,8 @@ class VerificationResult(BaseModel):
 
 class FullPipelineRequest(BaseModel):
     url: HttpUrl
+    # keep_audio is no longer relevant as we are using temp files
+    # but we can keep it in the model if the client sends it
     keep_audio: bool = False
 
 
@@ -140,8 +143,8 @@ def sanitize_filename(filename: str) -> str:
     return sanitized[:200]
 
 
-def download_audio_from_url(video_url: str) -> Optional[str]:
-    """Downloads the best audio from a given URL and converts it to MP3."""
+def download_audio_from_url(video_url: str, download_dir: str) -> Optional[str]:
+    """Downloads the best audio from a given URL and converts it to MP3 into the specified directory."""
     try:
         info_opts = {
             'quiet': True,
@@ -154,7 +157,8 @@ def download_audio_from_url(video_url: str) -> Optional[str]:
             sanitized_title = sanitize_filename(title)
             
             unique_id = str(uuid.uuid4())[:8]
-            final_filename_base = f"{sanitized_title}_{unique_id}"
+            # Use os.path.join to create a path in the temp directory
+            final_filename_base = os.path.join(download_dir, f"{sanitized_title}_{unique_id}")
             # This is the path we expect after processing
             final_filepath_mp3 = f"{final_filename_base}.mp3"
 
@@ -176,11 +180,10 @@ def download_audio_from_url(video_url: str) -> Optional[str]:
             
             if error_code == 0:
                 # The file should exist at the mp3 path
-                full_path = os.path.abspath(final_filepath_mp3)
-                if os.path.exists(full_path):
-                    return full_path
+                if os.path.exists(final_filepath_mp3):
+                    return final_filepath_mp3
                 else:
-                    print(f"Error: yt-dlp reported success but file not found at {full_path}")
+                    print(f"Error: yt-dlp reported success but file not found at {final_filepath_mp3}")
                     return None
             else:
                 print(f"Error: yt-dlp download failed with code {error_code}")
@@ -250,16 +253,7 @@ def verify_content(content_text: str) -> Optional[dict]:
         return None
 
 
-def cleanup_file(file_path: str):
-    """Helper function to clean up downloaded files."""
-    try:
-        if os.path.exists(file_path):
-            os.remove(file_path)
-            print(f"Cleaned up: {file_path}")
-    except Exception as e:
-        print(f"Could not delete file {file_path}: {e}")
-
-
+# Note: cleanup_file is no longer needed as we'll use tempfile.TemporaryDirectory
 
 
 # ------------------------------API Endpoint -------------------------------------------
@@ -311,102 +305,104 @@ async def verify(request: VerificationRequest):
 # ============================================
 
 @app.post("/verify-video")
-async def verify_video(request: VideoURLRequest, background_tasks: BackgroundTasks):
+async def verify_video(request: VideoURLRequest):
     """
     Single endpoint to verify video content.
     Downloads audio, transcribes, translates, and verifies in one call.
     Returns only the verification result.
+    
+    Uses a temporary directory for safe file handling.
     """
-    audio_path = None
+    video_url = str(request.url)
+    cleaned_url = video_url.split('?')[0].strip()
+
+    # Use a temporary directory that cleans itself up
     try:
-        video_url = str(request.url)
-        cleaned_url = video_url.split('?')[0].strip()
-        
-        audio_path = download_audio_from_url(cleaned_url)
-        if not audio_path:
-            raise HTTPException(status_code=400, detail="Failed to download audio from URL")
-        
-        # FIXED: Call transcribe_audio_openai directly
-        transcription = transcribe_audio_openai(audio_path)
-        if not transcription:
-            raise HTTPException(status_code=500, detail="Transcription failed")
-        
-        if len(transcription.strip()) < 5:
-            raise HTTPException(status_code=400, detail="Transcription is too short to process")
-        
-        english_text = translate_to_english(transcription)
-        if not english_text:
-            raise HTTPException(status_code=500, detail="Translation failed")
-        
-        verification_result = verify_content(english_text)
-        if not verification_result:
-            raise HTTPException(status_code=500, detail="Verification failed")
-        
-        return {
-            "success": True,
-            "url": str(request.url),
-            "verification": verification_result,
-            "transcript": english_text
-        }
-        
+        with tempfile.TemporaryDirectory() as temp_dir:
+            audio_path = download_audio_from_url(cleaned_url, temp_dir)
+            if not audio_path:
+                raise HTTPException(status_code=400, detail="Failed to download audio from URL")
+            
+            transcription = transcribe_audio_openai(audio_path)
+            if not transcription:
+                raise HTTPException(status_code=500, detail="Transcription failed")
+            
+            if len(transcription.strip()) < 5:
+                raise HTTPException(status_code=400, detail="Transcription is too short to process")
+            
+            english_text = translate_to_english(transcription)
+            if not english_text:
+                raise HTTPException(status_code=500, detail="Translation failed")
+            
+            verification_result = verify_content(english_text)
+            if not verification_result:
+                raise HTTPException(status_code=500, detail="Verification failed")
+            
+            return {
+                "success": True,
+                "url": str(request.url),
+                "verification": verification_result,
+                "transcript": english_text
+            }
+            
     except HTTPException:
+        # Re-raise HTTPException to return proper error code
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
-    finally:
-        if audio_path:
-            background_tasks.add_task(cleanup_file, audio_path)
+        # Catch-all for other errors
+        print(f"Error in /verify-video pipeline: {e}")
+        raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
+    # temp_dir is automatically cleaned up here, even if an exception occurred
 
 
 @app.post("/full-pipeline")
-async def full_pipeline(request: FullPipelineRequest, background_tasks: BackgroundTasks):
+async def full_pipeline(request: FullPipelineRequest):
     """
     Complete pipeline: download audio, transcribe, translate, and verify content.
     Returns detailed information from each step.
+    
+    Uses a temporary directory for safe file handling.
     """
-    audio_path = None
+    video_url = str(request.url)
+    cleaned_url = video_url.split('?')[0].strip()
+
     try:
-        video_url = str(request.url)
-        cleaned_url = video_url.split('?')[0].strip()
-        
-        audio_path = download_audio_from_url(cleaned_url)
-        if not audio_path:
-            raise HTTPException(status_code=400, detail="Failed to download audio")
-        
-        # FIXED: Call transcribe_audio_openai directly
-        transcription = transcribe_audio_openai(audio_path)
-        if not transcription:
-            raise HTTPException(status_code=500, detail="Transcription failed")
-        
-        if len(transcription.strip()) < 5:
-            raise HTTPException(status_code=400, detail="Transcription is too short")
-        
-        english_text = translate_to_english(transcription)
-        if not english_text:
-            raise HTTPException(status_code=500, detail="Translation failed")
-        
-        verification_result = verify_content(english_text)
-        if not verification_result:
-            raise HTTPException(status_code=500, detail="Verification failed")
-        
-        return {
-            "success": True,
-            "url": str(request.url),
-            "audio_path": audio_path if request.keep_audio else "deleted",
-            "transcription": transcription,
-            "translated_text": english_text,
-            "verification": verification_result,
-            "timestamp": datetime.now().isoformat()
-        }
-        
+        with tempfile.TemporaryDirectory() as temp_dir:
+            audio_path = download_audio_from_url(cleaned_url, temp_dir)
+            if not audio_path:
+                raise HTTPException(status_code=400, detail="Failed to download audio")
+            
+            transcription = transcribe_audio_openai(audio_path)
+            if not transcription:
+                raise HTTPException(status_code=500, detail="Transcription failed")
+            
+            if len(transcription.strip()) < 5:
+                raise HTTPException(status_code=400, detail="Transcription is too short")
+            
+            english_text = translate_to_english(transcription)
+            if not english_text:
+                raise HTTPException(status_code=500, detail="Translation failed")
+            
+            verification_result = verify_content(english_text)
+            if not verification_result:
+                raise HTTPException(status_code=500, detail="Verification failed")
+            
+            return {
+                "success": True,
+                "url": str(request.url),
+                "audio_path": "deleted (temp file)",
+                "transcription": transcription,
+                "translated_text": english_text,
+                "verification": verification_result,
+                "timestamp": datetime.now().isoformat()
+            }
+            
     except HTTPException:
         raise
     except Exception as e:
+        print(f"Error in /full-pipeline: {e}")
         raise HTTPException(status_code=500, detail=f"Pipeline error: {str(e)}")
-    finally:
-        # This cleanup logic now runs regardless of success or failure
-        if audio_path and not request.keep_audio:
-            background_tasks.add_task(cleanup_file, audio_path)
+    # temp_dir is automatically cleaned up here
 
 
 @app.post("/transcribe-audio")
@@ -415,16 +411,16 @@ async def transcribe_audio_endpoint(audio_file: UploadFile = File(...)):
     Transcribe audio using OpenAI Whisper.
     Returns the transcript text.
     """
-    temp_audio_path = None
+    # Use a temporary file that is deleted automatically
     try:
-        audio_bytes = await audio_file.read()
-        
-        # Use a temporary file to hold the uploaded audio
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as temp_audio:
-            temp_audio.write(audio_bytes)
+        with tempfile.NamedTemporaryFile(delete=True, suffix=".mp3") as temp_audio:
+            shutil.copyfileobj(audio_file.file, temp_audio)
             temp_audio_path = temp_audio.name
             
-        transcript = transcribe_audio_openai(temp_audio_path)
+            # temp_audio is still open, so we pass the path
+            transcript = transcribe_audio_openai(temp_audio_path)
+        
+        # File is automatically deleted here
         
         if not transcript:
             raise HTTPException(status_code=500, detail="Transcription failed")
@@ -439,11 +435,8 @@ async def transcribe_audio_endpoint(audio_file: UploadFile = File(...)):
     except HTTPException:
         raise
     except Exception as e:
+        print(f"Error in /transcribe-audio: {e}")
         raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
-    finally:
-        # Clean up the temporary file
-        if temp_audio_path and os.path.exists(temp_audio_path):
-            os.remove(temp_audio_path)
 
 
 @app.get("/health")
@@ -468,4 +461,5 @@ if __name__ == "__main__":
     import uvicorn
     # Defaulting to port 8000 as 5000 is common for other services
     port = int(os.getenv("PORT", 8000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    # Note: for production, this file is run via Gunicorn (see Dockerfile)
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)
