@@ -1,3 +1,6 @@
+**TEAM NAME - NULL-POINTERS
+PROJECT NAME- FACTIFY AI : TECHNICAL ROADMAP & IMPLEMENTATION GUIDE**
+
 # Factify AI: Technical Roadmap & Implementation Guide
 
 This project is an AI-powered video verification engine. Below is the technical plan for implementing the next phase of features.
