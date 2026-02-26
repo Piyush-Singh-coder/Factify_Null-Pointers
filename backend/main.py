@@ -8,6 +8,7 @@ import os
 import re
 import json
 from openai import OpenAI
+from tavily import TavilyClient
 from dotenv import load_dotenv
 import uuid
 from datetime import datetime
@@ -27,7 +28,7 @@ app = FastAPI(
 
 # --- Configuration ---
 # Use environment variables or fallbacks
-CLIENT_ORIGIN = os.getenv("CLIENT_ORIGIN_URL", "http://localhost:5173")
+CLIENT_ORIGIN = os.getenv("CLIENT_ORIGIN_URL", "http://localhost:5174")
 origins = [CLIENT_ORIGIN]
 
 if CLIENT_ORIGIN == "*":
@@ -48,6 +49,13 @@ except Exception as e:
     print(f"Warning: OpenAI client initialization failed: {e}")
     openai_client = None
 
+# Initialize Tavily client
+try:
+    tavily_client = TavilyClient(api_key=os.getenv("TAVILY_API_KEY"))
+except Exception as e:
+    print(f"Warning: Tavily client initialization failed: {e}")
+    tavily_client = None
+
 # --- Model Configuration ---
 OPENAI_CHAT_MODEL = "gpt-4o"
 # Use the standard model for transcriptions
@@ -56,7 +64,9 @@ OPENAI_TRANSCRIPTION_MODEL = "whisper-1"
 VERIFIER_SYSTEM_PROMPT = """
 You are a fact-checker assistant. Your name is 'Verifier'.
 Your job is to verify the content provided (which is a transcription of a video)
-and determine if the claims made are factually correct based on your internal knowledge.
+and determine if the claims made are factually correct based on your internal knowledge AND the provided verified Web Search Context (if any).
+
+If the information in the Web Search Context is more recent or contradicts your internal knowledge, you MUST prioritize the Web Search Context.
 
 You must check if the content is scientifically, historically, or otherwise factually correct.
 First, determine if the content contains a verifiable claim or if it is just
@@ -73,7 +83,8 @@ Output format:
   "isFactualClaim": boolean,
   "isContentCorrect": "Yes" | "No" | "Half" | "N/A",
   "reason": "string",
-  "webSearchUsed": false
+  "webSearchUsed": boolean,
+  "sources": ["URL1", "URL2"]
 }
 
 Guidelines for fields:
@@ -84,8 +95,8 @@ Guidelines for fields:
     - "Half": If the claim is partially correct, misleading, or lacks critical context.
     - "N/A": If "isFactualClaim" is false (e.g., it's an opinion, joke, or greeting).
 - "reason": Explain your reasoning. If "isFactualClaim" is false, state that.
-- "webSearchUsed": Always set this to false.
-
+- "webSearchUsed": Set this to true if you used information from the Web Search Context.
+- "sources": Provide a list of direct URLs used to verify the claim. This should primarily come from the Web Search Context. If no sources are available or if "isFactualClaim" is false, return an empty array [].
 """
 
 # Pydantic models for request/response
@@ -101,6 +112,7 @@ class VerificationResult(BaseModel):
     isContentCorrect: str
     reason: str
     webSearchUsed: bool = False
+    sources: List[str] = []
 
 class FullPipelineRequest(BaseModel):
     url: HttpUrl
@@ -217,31 +229,77 @@ def translate_to_english(text_to_translate: str) -> Optional[str]:
         return None
 
 # ---
-# for handling tool calls. This function now makes one simple call.
+# Search and Verification Process
 # ---
+
+def perform_fact_search(query: str) -> str:
+    """Searches the web for recent facts regarding a specific query."""
+    if not tavily_client:
+        return ""
+    
+    try:
+        response = tavily_client.search(
+            query=query, 
+            search_depth="basic",
+            max_results=3
+        )
+        
+        context = ""
+        for result in response.get('results', []):
+            context += f"Source: {result['url']}\nContent: {result['content']}\n\n"
+            
+        return context
+    except Exception as e:
+        print(f"Web search error: {e}")
+        return ""
+
+
 def verify_content(content_text: str) -> Optional[dict]:
     """
-    Uses the enhanced prompt to fact-check the content using internal knowledge.
+    Uses the enhanced prompt to fact-check the content using internal knowledge and live web search.
     """
     if not openai_client:
         raise HTTPException(status_code=500, detail="OpenAI client not initialized")
     
     try:
+        # --- STEP 1: Extract the core claim as a search query ---
+        query_response = openai_client.chat.completions.create(
+            model=OPENAI_CHAT_MODEL,
+            messages=[
+                {"role": "system", "content": "Extract the main verifiable factual claim from this text into a short, 5-8 word Google search query. If there is no specific verifiable claim, or if it is an opinion/joke, return exactly 'NONE'."},
+                {"role": "user", "content": content_text}
+            ]
+        )
+        search_query = query_response.choices[0].message.content.strip()
+
+        search_context = ""
+        web_search_used = False
+
+        # --- STEP 2: Perform the search if a claim exists ---
+        if search_query != "NONE":
+            print(f"Searching web for: {search_query}")
+            search_context = perform_fact_search(search_query)
+            if search_context.strip():
+                web_search_used = True
+
+        # --- STEP 3: Final Verification ---
+        final_prompt = f"Content to verify: {content_text}\n\n"
+        if web_search_used:
+            final_prompt += f"Verified Web Search Context:\n{search_context}\n"
+
         response = openai_client.chat.completions.create(
             model=OPENAI_CHAT_MODEL,
             response_format={"type": "json_object"},
             messages=[
                 {"role": "system", "content": VERIFIER_SYSTEM_PROMPT},
-                {"role": "user", "content": content_text}
+                {"role": "user", "content": final_prompt}
             ]
         )
         
         json_string = response.choices[0].message.content
         result = json.loads(json_string)
         
-        # Ensure 'webSearchUsed' exists, although prompt forces it to false
-        if "webSearchUsed" not in result:
-             result["webSearchUsed"] = False
+        result["webSearchUsed"] = web_search_used
             
         return result
         
@@ -314,12 +372,11 @@ async def verify_video(request: VideoURLRequest):
     Uses a temporary directory for safe file handling.
     """
     video_url = str(request.url)
-    cleaned_url = video_url.split('?')[0].strip()
 
     # Use a temporary directory that cleans itself up
     try:
         with tempfile.TemporaryDirectory() as temp_dir:
-            audio_path = download_audio_from_url(cleaned_url, temp_dir)
+            audio_path = download_audio_from_url(video_url, temp_dir)
             if not audio_path:
                 raise HTTPException(status_code=400, detail="Failed to download audio from URL")
             
@@ -364,11 +421,10 @@ async def full_pipeline(request: FullPipelineRequest):
     Uses a temporary directory for safe file handling.
     """
     video_url = str(request.url)
-    cleaned_url = video_url.split('?')[0].strip()
 
     try:
         with tempfile.TemporaryDirectory() as temp_dir:
-            audio_path = download_audio_from_url(cleaned_url, temp_dir)
+            audio_path = download_audio_from_url(video_url, temp_dir)
             if not audio_path:
                 raise HTTPException(status_code=400, detail="Failed to download audio")
             

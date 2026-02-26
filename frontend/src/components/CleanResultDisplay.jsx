@@ -62,6 +62,21 @@ const CleanResultDisplay = ({ data }) => {
                 <span className="font-semibold">Reason:</span>
                 <p className="mt-1 text-sm ">{verification.reason}</p>
               </div>
+              
+              {verification.sources && verification.sources.length > 0 && (
+                <div className="p-3 bg-base-200 rounded-lg col-span-1 md:col-span-2">
+                  <span className="font-semibold block mb-2">Sources Needed for Verification (By Live Search API Context):</span>
+                  <ul className="list-disc list-inside space-y-1">
+                    {verification.sources.map((source, idx) => (
+                      <li key={idx} className="text-sm">
+                        <a href={source} target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:underline break-all">
+                          {source}
+                        </a>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
             </div>
           </div>
         </div>
