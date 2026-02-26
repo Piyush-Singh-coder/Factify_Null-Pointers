@@ -1,7 +1,7 @@
 import { UploadCloud } from "lucide-react";
 import { useState, useId } from "react";
 
-const FileDropzone = ({ onFilesChange, multiple = false, accept = "*" }) => {
+const FileDropZone = ({ onFilesChange, multiple = false, accept = "*" }) => {
   const [dragging, setDragging] = useState(false);
   const [files, setFiles] = useState([]);
   const id = useId();
@@ -62,4 +62,4 @@ const FileDropzone = ({ onFilesChange, multiple = false, accept = "*" }) => {
   );
 };
 
-export default FileDropzone;
+export default FileDropZone;

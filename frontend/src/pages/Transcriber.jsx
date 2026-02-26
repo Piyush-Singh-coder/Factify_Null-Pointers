@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { API_BASE_URL } from "../App";
 import Button from "../components/Button";
-import FileDropzone from "../components/FileDropzone";
+import FileDropZone from "../components/FileDropZone";
 import ErrorDisplay from "../components/ErrorDisplay";
 
 const Transcriber = () => {
@@ -48,7 +48,7 @@ const Transcriber = () => {
       <div className="card-body space-y-4">
         <h2 className="card-title text-primary">🎧 Transcribe Audio</h2>
 
-        <FileDropzone onFilesChange={handleFileChange} accept="audio/*" />
+        <FileDropZone onFilesChange={handleFileChange} accept="audio/*" />
 
         <Button
           onClick={handleSubmit}
